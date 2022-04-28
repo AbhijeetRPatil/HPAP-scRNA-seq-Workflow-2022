@@ -1,0 +1,756 @@
+---
+title: "Analysis of scRNA-seq data from Pancreatic Islets"
+author: "Abhijeet R. Patil"
+date: "4/26/2022"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/mnt/alvand/abhijeet/aab/apr_all/')
+library("knitr")
+library("kableExtra")
+library("magrittr")
+options(width = 80)
+```
+
+# Section 1- Preliminaries
+
+## Load libraries
+
+To begin with the analysis, we will first load the required packages. The downstream analysis of the scRNA-seq is built upon **Seurat** and **sctransform** packages. The **scDblFinder** package is used for identifying and removing doublets in the dataset. The single-cell annotation is carried out using the marker-based **scSorter** method. 
+
+```{r, warning=FALSE, error=FALSE, message=FALSE}
+library("Seurat")
+library("ggplot2")
+library("sctransform")
+library("BiocParallel")
+library("scDblFinder")
+library("SingleCellExperiment")
+library("cowplot")
+theme_set(theme_cowplot())
+library("RColorBrewer")
+library("viridis")
+library("scSorter")
+library("knitr")
+library("viridisLite")
+library("patchwork")
+library("tidyverse")
+library("dplyr")
+library("Matrix")
+```
+
+
+## Load data
+
+First, we will load the filtered count matrix from cellranger. This matrix contains the scRNA-seq counts from all the HPAP samples.
+
+```{r}
+panc_data <- Read10X(data.dir = "./data/HPAP_samples_aggr_18Apr2022/outs/count/filtered_feature_bc_matrix/")
+```
+
+## Dimension of raw merged counts matrix
+
+The dimension of the raw counts matrix after merging all HPAP scRNA-seq samples with cellranger is shown below. There are total of `r dim(panc_data)[1]` genes and `r dim(panc_data)[2]` cells.
+
+```{r}
+# panc_data <- Read10X(data.dir = "PATH_TO_FEATURE_MATRIX")
+dim(panc_data)
+```
+
+# Section 2- Preprocessing the data
+
+## Create Seurat object
+
+The Seurat object initialization step above only considered cells that expressed at least 200 genes. The **min.cells**- parameter will include features detected in at least three cells. The **min.features** - Include cells where at least three fifty features are detected. 
+
+With the above parameters the count matrix will also be subsetted. Optionally, to revive the excluded features, create a new object with a lower threshold.
+
+```{r Load Object, warning=FALSE}
+panc <- CreateSeuratObject(counts = panc_data, min.cells = 3, min.features = 200,
+                           project = "hpap@67")
+dim(panc)
+
+```
+
+In the Seurat object, `r dim(panc)[1]` genes and `r dim(panc)[2]` cells were present after passing the thresholds.
+
+## Add metadata
+
+Here, we will add four new columns to the Seurat metadata. The first column sample_id contains raw sample names from cellranger, hpap_id refers to the donor identifier, the disease_id corresponds to the numeric count in each disease type, and finally the disease_state shows the general state of disease (CTL, AAB, and T1D).
+
+```{r Load Metadata, warning=FALSE}
+## Add metadata information
+sample <- read.csv(file.path("./metadata", "HPAP_samples_aggr_18Apr2022_cellranger.csv"), stringsAsFactors=F)
+```
+
+Parse through the sample ids, disease states, and donor ids. Extract the information and add information to metadata
+
+```{r Load Metadata Cont, warning=FALSE, echo=TRUE, message=FALSE}
+sample_id <- sample$sample_id
+disease_state <- sample$DiseaseState
+sample$disease_state <- sample$DiseaseState
+hpap_id <- sub("_.*", "", sample$sample_id)
+
+sample$DiseaseState[sample$DiseaseState=="T1D"] = c(paste("T1D_",seq(1:length(sample$DiseaseState[sample$DiseaseState=="T1D"]))))
+sample$DiseaseState[sample$DiseaseState=="T2D"] = c(paste("T2D_",seq(1:length(sample$DiseaseState[sample$DiseaseState=="T2D"]))))
+sample$DiseaseState[sample$DiseaseState=="Control"] = c(paste("Control_",seq(1:length(sample$DiseaseState[sample$DiseaseState=="Control"]))))
+sample$DiseaseState[sample$DiseaseState=="AAB"] = c(paste("AAB_",seq(1:length(sample$DiseaseState[sample$DiseaseState=="AAB"]))))
+sample_disease <- sample$DiseaseState
+colnames(sample)[4]="sample_disease"
+write.csv(sample, "./metadata/HPAP_samples_aggr_18Apr2022_seurat.csv", row.names = F)
+
+## Extract Patient ID
+id <- as.numeric(gsub(".*(\\b\\d+\\b).*", "\\1", rownames(panc@meta.data)))
+df <- data.frame(id)
+df$sample_id <- sample_id[df$id]
+df$hpap_id <- hpap_id[df$id]
+df$disease_state <- disease_state[df$id]
+df$disease_id <- sample_disease[df$id]
+```
+
+Adding donor ids, sample_ids, and disease state columns to metadata.
+
+```{r, warning=FALSE, message=FALSE, error=FALSE}
+## Add Patient info to object
+CellsMeta = panc@meta.data
+## Add sample_id
+CellsMeta["sample_id"] <- df$sample_id
+CellsMetaTrim <- subset(CellsMeta, select = c("sample_id"))
+panc <- AddMetaData(panc, CellsMetaTrim)
+
+## Add hpap_id
+CellsMeta["hpap_id"] <- df$hpap_id
+CellsMetaTrim <- subset(CellsMeta, select = c("hpap_id"))
+panc <- AddMetaData(panc, CellsMetaTrim)
+
+## Add disease_id
+CellsMeta["disease_id"] <- df$disease_id
+CellsMetaTrim <- subset(CellsMeta, select = c("disease_id"))
+panc <- AddMetaData(panc, CellsMetaTrim)
+
+## Add disease_state
+CellsMeta["disease_state"] <- df$disease_state
+CellsMetaTrim <- subset(CellsMeta, select = c("disease_state"))
+panc <- AddMetaData(panc, CellsMetaTrim)
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+## Remove all objects from workspace
+rm(df,CellsMeta,CellsMetaTrim,hpap_id,sample_id,id,disease_state,sample,sample_disease,panc_data)
+```
+
+
+### Table showing metadata information
+
+```{r kable_meta, echo=TRUE, results = "asis", error=FALSE, warning=FALSE, message=FALSE}
+head(panc@meta.data) %>%
+  kable(format = "html", col.names = colnames(head(panc@meta.data))) %>%
+  kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "400px")
+```
+
+
+<!-- ```{r echo=T,results='asis',error=F,warning=F, message=FALSE} -->
+<!-- kable(head(panc@meta.data), format = "markdown") -->
+<!-- ``` -->
+
+
+```{r Calculate-MT%}
+## Calculate MT %
+panc[["percent.mt"]] <- PercentageFeatureSet(panc, pattern = "^MT-")
+```
+
+## Initial pre-processing
+
+The below violin plots shows the number of features, counts, and mitochondrial reads after intial pre-processing
+
+Violin plots showing nFeature_RNA, nCount_RNA, and percent.mt with points.
+
+```{r figure-bf_Gene_UMI_MT, message=FALSE, error=FALSE, warning=FALSE, fig.width = 7, fig.height = 5, fig.show="hold"}
+VlnPlot(panc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "disease_state",
+        pt.size = 0.001, combine = T) & theme(legend.position = 'none',
+                                                               axis.title.x = element_blank())
+```
+
+Violin plots showing nFeature_RNA, nCount_RNA, and percent.mt without points.
+
+```{r  figure-bf_Gene_UMI_MT_v1, message=FALSE, error=FALSE, warning=FALSE, fig.width = 7, fig.height = 5, fig.show="hold"}
+VlnPlot(panc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "disease_state",
+        pt.size = 0, combine = T) & theme(legend.position = 'none', 
+                                                           axis.title.x = element_blank())
+```
+
+The FeatureScatter plots used to visualize feature-feature relationships. Correlation between nCount_RNA - nFeature_RNA and nCount_RNA - percent.mt after initial pre-processing are measured.
+
+```{r figure-bf_corr, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold"}
+# FeatureScatter used to visualize feature-feature relationships.
+FeatureScatter(panc, feature1 = "nCount_RNA", feature2 = "percent.mt", group.by = "disease_state")  & theme(legend.position = 'none')
+FeatureScatter(panc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "disease_state") 
+```
+
+## Cell metrics after initial pre-processing
+
+We measure the distribution of cells across different individuals such as healthy, AAB, T1D, and T2D after initial pre-processing.
+
+```{r, error=FALSE, message=FALSE, warning=FALSE}
+# Create Data
+## All- AAB Control T1D T2D
+Prop <- c(table(panc$disease_state)[[1]], 
+          table(panc$disease_state)[[2]] , 
+          table(panc$disease_state)[[3]], 
+          table(panc$disease_state)[[4]])
+
+# number of colors in the palette
+no_of_colors <- length(Prop)
+
+# options represent the color types, there are altogether 8 options.
+palette <- viridis_pal(option = "D")(no_of_colors)
+
+# hex color codes
+palette
+```
+
+Pie chart showing the overall number of donors and the aggregated count of cells present in each disease group.
+
+```{r bf_plotoverall, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold"}
+# represents colors in a pie chart manner
+pie(Prop, labels = c(paste0("AAB \n ncells= ", Prop[1], "\n ndonors= 10"),
+                     paste0("CTL \n ncells= ", Prop[2], "\n ndonors= 31"),
+                     paste0("\n T1D \n ncells= ", Prop[3], "\n ndonors= 9"),
+                     paste0("\n T2D \n ncells= ", Prop[4], "\n ndonors= 17")),
+    col = palette)
+```
+
+Calculate the total number of cells present in individual donors across all 4 disease groups. The results are stored in data frames.
+
+```{r, message=FALSE, error=FALSE, warning=FALSE}
+## For different groups
+## all cells
+bf_all <- table(panc$disease_id)
+
+## aab cells
+bf_aab <- bf_all[grep("AAB", names(bf_all))]
+names(bf_aab) <- gsub("_ ", "", names(bf_aab))
+bf_aab <- as.data.frame(bf_aab)
+
+
+## ctl cells
+bf_ctl <- bf_all[grep("Control", names(bf_all))]
+names(bf_ctl) <- gsub("_ ", "", names(bf_ctl))
+bf_ctl <- as.data.frame(bf_ctl)
+bf_ctl$Var1 <- gsub("Control", "CTL", bf_ctl$Var1)
+
+## t1d cells
+bf_t1d <- bf_all[grep("T1D", names(bf_all))]
+names(bf_t1d) <- gsub("_ ", "", names(bf_t1d))
+bf_t1d <- as.data.frame(bf_t1d)
+
+## t2d cells
+bf_t2d <- bf_all[grep("T2D", names(bf_all))]
+names(bf_t2d) <- gsub("_ ", "", names(bf_t2d))
+bf_t2d <- as.data.frame(bf_t2d)
+```
+
+Pie chart showing the cell distribution in each AAB donor
+
+```{r bf_plotAAB, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold"}
+## AAB
+pie_labels <- paste0(bf_aab$Var1, "  ", round(100 * bf_aab$Freq/sum(bf_aab$Freq), 2), "%")
+pie(bf_aab$Freq, labels = pie_labels, col =  hcl.colors(length(bf_aab$Var1), "Purples"))
+```
+
+Pie chart showing the cell distribution in each healthy donor
+
+```{r bf_plotCTL, message=FALSE, error=FALSE, warning=FALSE, fig.width = 13, fig.height = 13, fig.show="hold"}
+## CTL
+pie_labels <- paste0(bf_ctl$Var1, "  ", round(100 * bf_ctl$Freq/sum(bf_ctl$Freq), 2), "%")
+pie(bf_ctl$Freq, labels = pie_labels, col =  hcl.colors(length(bf_ctl$Var1), "TealGrn"))
+
+```
+
+Pie chart showing the cell distribution in each T1D and T2D donors
+
+```{r bf_plotT1DT2D, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold", out.width="50%"}
+## T1D
+pie_labels <- paste0(bf_t1d$Var1, "  ", round(100 * bf_t1d$Freq/sum(bf_t1d$Freq), 2), "%")
+pie(bf_t1d$Freq, labels = pie_labels, col =  hcl.colors(length(bf_ctl$Var1), "Green-Yellow")) 
+## T2D
+pie_labels <- paste0(bf_t2d$Var1, "  ", round(100 * bf_t2d$Freq/sum(bf_t2d$Freq), 2), "%")
+pie(bf_t2d$Freq, labels = pie_labels, col =  c("#FFEA00", "#FCF55F", "#FADA5E",
+                                               "#FAFA33", "#F4BB44", "#FBEC5D",
+                                               "#FFFF00", "#FFFAA0", "#FFE5B4"))
+```
+
+Median gene number showing the cell distribution across all groups after initial pre-processing
+
+```{r bf_plotmgps, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold"}
+## Median Gene Per Sample
+df_mgps <- data.frame(panc@meta.data$nFeature_RNA, panc@meta.data$disease_state) 
+colnames(df_mgps) <- c("Median_Gene_Number", "Condition")
+ggplot(df_mgps, aes(Condition, Median_Gene_Number)) + geom_boxplot(aes(fill = Condition), 
+                                                                   width=0.5, outlier.size = 0.8) +
+  scale_fill_viridis(discrete = TRUE) + xlab("") + theme(legend.position = "none")
+```
+
+## Remove doublets
+
+The **scDblFinder** function is employed to remove the potential doublets from each HPAP donor separately. The parameter sample_id refers to individual donor. The function uses an object from SingleCellExperiment class, therefore the **SingleCellExperiment** package is used for conversion. 
+
+```{r}
+## Convert object into singlecellexperiment
+panc.sce <- as.SingleCellExperiment(panc)
+panc.sce <- scDblFinder(panc.sce, samples="sample_id", clusters=FALSE, BPPARAM=MulticoreParam(10))
+## Convert sce object back to seurat
+panc_seurat <- as.Seurat(panc.sce, counts = "counts", data = "logcounts")
+```
+
+### The total number of doublets are shown below
+
+```{r}
+table(panc.sce$scDblFinder.class)
+```
+
+The doublet information is stored in the metadata. The updated metadata can be found below 
+
+### Updated metadata table with doublets information
+
+```{r kable_doublets, echo=TRUE, results = "asis", error=FALSE, warning=FALSE, message=FALSE}
+head(panc@meta.data) %>%
+  kable(format = "html", col.names = colnames(head(panc@meta.data))) %>%
+  kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "400px")
+```
+
+## Pre-processing the data based on information from above steps
+The nFeature_RNA and nCount_RNA represents the number of genes detected in each cell and the total number of molecules (UMIs) detected within a cell respectively. While the low nFeature_RNA in a cell mean that it may be dead/dying or it may represent an empty droplet, the high nCount_RNA and nFeature_RNA denotes that the cell may be a doublet or multiplet. This filtering along with mitochondrial reads is crucial pre-processing step, because, removing such outliers from these groups might also remove some of the doublets or dead/empty droplets.
+
+### Remove all the potential doublets found
+
+The cell being either doublet or singlet is stored in column scDlFinder.class. The potential doublets are removed in this step.
+
+```{r}
+# After doublet removal
+panc <- subset(panc_seurat, subset = scDblFinder.class  == "singlet")
+
+```
+
+### Subset Data
+The final data after removing potential doublets and subsetting based on nFeature and percent.mt is shown below
+
+```{r}
+panc_new <- subset(panc, subset = nFeature_RNA > 200 & nFeature_RNA < 9000
+                   & percent.mt < 25
+                   & nCount_RNA < 100000
+)
+dim(panc_new)
+```
+
+
+## Update Metadata with MT and Rb genes information
+
+After removing doublets, now we can proceed with further pre-processing steps. For ex, Mitochondrial genes are useful indicators of cell state. 
+
+### Add the MT information
+
+Adding the Mitochondrial genes to the metadata after pre-processing
+
+```{r}
+panc[["percent.mt"]] <- PercentageFeatureSet(panc, pattern = "^MT-")
+```
+
+## After pre-processing
+The metadata information is updated after final pre-processing. The violin plot are used to show the number of features, counts, and the percentage of mitochondrial reads after all the pre-processing.
+
+Violin plots showing nFeature_RNA, nCount_RNA, and percent.mt with points.
+
+```{r figure-af_Gene_UMI_MT, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold"}
+VlnPlot(panc_new, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "disease_state",
+        pt.size = 0.001, combine = T) & theme(legend.position = 'none',
+                                                               axis.title.x = element_blank())
+```
+
+Violin plots showing nFeature_RNA, nCount_RNA, and percent.mt without points.
+
+```{r figure-af_Gene_UMI_MT_v1, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold"}
+VlnPlot(panc_new, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "disease_state",
+        pt.size = 0, combine = T) & theme(legend.position = 'none', 
+                                                           axis.title.x = element_blank())
+```
+
+
+### FeatureScatter plots
+Correlation between nCount_RNA - nFeature_RNA and nCount_RNA - percent.mt after filtering.
+The FeatureScatter is typically used to visualize feature-feature relationships.
+
+```{r figure-af_corr, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold", out.width="50%"}
+plot1 <- FeatureScatter(panc_new, feature1 = "nCount_RNA", feature2 = "percent.mt", group.by = "disease_state")  & theme(legend.position = 'none')
+plot2 <- FeatureScatter(panc_new, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "disease_state") 
+```
+
+## Cell metrics after final pre-processing
+We measure the distribution of cells across different individuals such as healthy, AAB, T1D, and T2D after initial pre-processing.
+
+```{r, error=FALSE, message=FALSE, warning=FALSE}
+# Create Data
+## AAB Control T1D T2D
+Prop <- c(table(panc_new$disease_state)[[1]], table(panc_new$disease_state)[[2]] , table(panc_new$disease_state)[[3]], table(panc_new$disease_state)[[4]])
+
+# number of colors in the palette
+no_of_colors <- length(Prop)
+
+# options represent the color types, there are altogether 8 options.
+palette <- viridis_pal(option = "D")(no_of_colors)
+
+# hex color codes
+palette
+```
+
+Pie chart showing the overall number of donors and the aggregated count of cells present in each disease group.
+
+```{r af_plotoverall, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold"}
+# represents colors in a pie chart manner
+pie(Prop, labels = c(paste0("AAB \n ncells= ", Prop[1], "\n ndonors= 10"),
+                     paste0("CTL \n ncells= ", Prop[2], "\n ndonors= 31"),
+                     paste0("\n T1D \n ncells= ", Prop[3], "\n ndonors= 9"),
+                     paste0("\n T2D \n ncells= ", Prop[4], "\n ndonors= 17")),
+    col = palette)
+```
+
+Calculate the total number of cells present in individual donors across all 4 disease groups. The results are stored in data frames.
+
+```{r}
+## Metrics for all samples
+## all cells
+bf_all <- table(panc_new$disease_id)
+
+## aab cells
+bf_aab <- bf_all[grep("AAB", names(bf_all))]
+names(bf_aab) <- gsub("_ ", "", names(bf_aab))
+bf_aab <- as.data.frame(bf_aab)
+
+
+## ctl cells
+bf_ctl <- bf_all[grep("Control", names(bf_all))]
+names(bf_ctl) <- gsub("_ ", "", names(bf_ctl))
+bf_ctl <- as.data.frame(bf_ctl)
+bf_ctl$Var1 <- gsub("Control", "CTL", bf_ctl$Var1)
+
+## t1d cells
+bf_t1d <- bf_all[grep("T1D", names(bf_all))]
+names(bf_t1d) <- gsub("_ ", "", names(bf_t1d))
+bf_t1d <- as.data.frame(bf_t1d)
+
+## t2d cells
+bf_t2d <- bf_all[grep("T2D", names(bf_all))]
+names(bf_t2d) <- gsub("_ ", "", names(bf_t2d))
+bf_t2d <- as.data.frame(bf_t2d)
+```
+
+Pie chart showing the cell distribution in each AAB donor after pre-processing
+
+```{r af_plotAAB, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold"}
+## AAB
+pie_labels <- paste0(bf_aab$Var1, "  ", round(100 * bf_aab$Freq/sum(bf_aab$Freq), 2), "%")
+pie(bf_aab$Freq, labels = pie_labels, col =  hcl.colors(length(bf_aab$Var1), "Purples"))
+```
+
+Pie chart showing the cell distribution in each healthy donor after pre-processing
+
+```{r af_plotCTL, message=FALSE, error=FALSE, warning=FALSE, fig.width = 13, fig.height = 13, fig.show="hold"}
+## CTL
+pie_labels <- paste0(bf_ctl$Var1, "  ", round(100 * bf_ctl$Freq/sum(bf_ctl$Freq), 2), "%")
+pie(bf_ctl$Freq, labels = pie_labels, col =  hcl.colors(length(bf_ctl$Var1), "TealGrn"))
+```
+
+Pie chart showing the cell distribution in each T1D and T2D donors after pre-processing
+
+```{r af_plotT1DT2D, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold", out.width="50%"}
+## T1D
+pie_labels <- paste0(bf_t1d$Var1, "  ", round(100 * bf_t1d$Freq/sum(bf_t1d$Freq), 2), "%")
+pie(bf_t1d$Freq, labels = pie_labels, col =  hcl.colors(length(bf_ctl$Var1), "Green-Yellow")) 
+## T2D
+pie_labels <- paste0(bf_t2d$Var1, "  ", round(100 * bf_t2d$Freq/sum(bf_t2d$Freq), 2), "%")
+pie(bf_t2d$Freq, labels = pie_labels, col =  c("#FFEA00", "#FCF55F", "#FADA5E",
+                                               "#FAFA33", "#F4BB44", "#FBEC5D",
+                                               "#FFFF00", "#FFFAA0", "#FFE5B4"))
+```
+
+Median gene number showing the cell distribution across all groups after final pre-processing
+
+```{r af_plotmgps, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold"}
+## Median Gene Per Sample after filtering
+df_mgps <- data.frame(panc_new@meta.data$nFeature_RNA, panc_new@meta.data$disease_state) 
+colnames(df_mgps) <- c("Median_Gene_Number", "Condition")
+ggplot(df_mgps, aes(Condition, Median_Gene_Number)) + geom_boxplot(aes(fill = Condition), 
+                                                                   width=0.5, outlier.size = 0.8) +
+  scale_fill_viridis(discrete = TRUE) + xlab("") + theme(legend.position = "none")
+```
+
+# Section 3- Normalizing and scaling the data
+
+## SCT: Single Cell Transform
+
+The seurat's SCTranform (SCT) function is used to normalize the counts that measures the differences in sequencing depth per cell for each sample. The SCT method is built on the concept regularized negative binomial model to perform normalization and variance stabilization of single-cell RNA-seq data. It removes the variation due to sequencing depth (nUMIs). The vars.to.regress parameter allows us to regress out the variation from other sources such as percentage of mitochondrial. The output of SCT model is the normalized expression levels for all the transcripts. Lastly, the variable.features.n parameter is used to select the variable features and is set as 3000.
+
+
+```{r, error=FALSE, warning=FALSE, message=FALSE}
+panc_new_sct <- SCTransform(panc_new, method = "glmGamPoi", variable.features.n = 3000, vars.to.regress = "percent.mt", verbose = FALSE)
+```
+
+The seurat object now consists of two assays RNA and SCT, with the default being set as SCT.
+
+```{r}
+DefaultAssay(panc_new_sct) 
+```
+
+### Perform dimensionality reduction by PCA and UMAP embedding
+
+These are now standard steps in the Seurat workflow for visualization and clustering
+
+```{r, warning=FALSE, error=FALSE, message=FALSE}
+panc_new_sct <- RunPCA(panc_new_sct, verbose = TRUE)
+```
+
+Plot showing heatmaps of PCs- 1 to 12 from the PCA analysis
+
+```{r, figure-pca1, message=FALSE, fig.width = 10, fig.height = 10, fig.show="hold"}
+DimHeatmap(panc_new_sct, dims = 1:12, cells = 500, balanced = TRUE)
+```
+
+Plot showing heatmaps of PCs- 13 to 24 from the PCA analysis
+
+```{r, figure-pca2, message=FALSE, fig.width = 10, fig.height = 10, fig.show="hold"}
+DimHeatmap(panc_new_sct, dims = 13:24, cells = 500, balanced = TRUE)
+```
+
+Plot showing heatmaps of PCs- 25 to 36 from the PCA analysis
+
+```{r, figure-pca3, message=FALSE, fig.width = 10, fig.height = 10, fig.show="hold"}
+DimHeatmap(panc_new_sct, dims = 25:36, cells = 500, balanced = TRUE)
+```
+
+
+Plot showing the variance explained by PCs from the PCA analysis
+
+```{r, figure-pca4, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold", out.width="50%"}
+ElbowPlot(panc_new_sct, ndims = 40)
+ElbowPlot(panc_new_sct)
+```
+
+
+## Run UMAP
+
+The Uniform Manifold Approximation and Projection (UMAP) dimensional reduction technique is run on the first 20 principal components. 
+
+```{r, error=FALSE, warning=FALSE, message=FALSE}
+panc_new_sct <- RunUMAP(panc_new_sct, dims = 1:20, verbose = FALSE)
+```
+
+
+## Find Neighbors
+
+Here we compute the k nearest neighbors in the dataset. The nearest neighbors are calculated on the reduced dimensions from the PCA. We use first 20 principal components.
+
+```{r, error=FALSE, warning=FALSE, message=FALSE}
+panc_new_sct <- FindNeighbors(panc_new_sct, dims = 1:20, verbose = FALSE)
+```
+
+
+## Find Clusters
+
+Once we have calculated the k-nearest neighbors in previous step, we will find the clusters of cells by the shared nearest neihbor (SNN) clustering algorithm. Here, we have set the resolution as 0.8. The higher resolution usually gives more number of clusters.
+
+```{r, error=FALSE, warning=FALSE, message=FALSE}
+panc_new_sct <- FindClusters(panc_new_sct, resolution = 0.8, method = "igraph", verbose = FALSE)
+```
+
+
+## UMAP plotting 
+
+UMAP plot showing the clusters based on SCT data and snn optimization at resolution 0.8
+
+```{r, fig.width = 8, fig.height = 5, fig.show="hold", message=FALSE}
+DimPlot(panc_new_sct, group.by='SCT_snn_res.0.8', reduction='umap') +
+  ggtitle('SCT_snn_res.0.8')
+
+```
+
+UMAP plot showing the distribution of cells across different disease types.
+  
+```{r, fig.width = 7, fig.height = 5, fig.show="hold", message=FALSE}
+DimPlot(panc_new_sct, group.by='disease_state', reduction='umap') +
+  ggtitle('Disease type')
+```
+
+UMAP plot showing the cell distribution with respect to individual donors
+
+```{r, fig.width = 12, fig.height = 7, fig.show="hold", message=FALSE}
+DimPlot(panc_new_sct, group.by='hpap_id', reduction='umap') +
+  ggtitle('Sample type') 
+```
+
+
+# Section 4- Cell Annotation
+
+## scSorter: single cell Sorter
+
+Loading marker genes data
+
+```{r readMarkerFile, message=FALSE, error=FALSE, warning=FALSE}
+anno <- read.csv("./annot/anno.csv")
+anno[,1] <- NULL
+```
+
+### Display marker genes across celltypes
+
+We used marker-based scSorter cell annotation method for assigning cells to known cell type based on the marker genes. The markers for each cell type were added based on comprehensive literature search.
+
+```{r kable_celltypes, echo=TRUE, results = "asis", error=FALSE, warning=FALSE, message=FALSE}
+anno %>%
+  kable(format = "html", col.names = colnames(anno)) %>%
+  kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "400px")
+```
+
+The scSorter method is based on a semi-supervised learning algorithm. It expects the pre-processed data as input. Therefore, we used the previously normalized, scaled and transformed expression matrix generated by SCT method as input. The top 3000 highly variable genes selected by SCT method was also given as input for scSorter method.
+
+```{r cellannot_topgenes, message=FALSE, error=FALSE, warning=FALSE}
+expr <- panc_new_sct@assays$SCT@data
+topgenes <- head(panc_new_sct@assays$SCT@var.features, 3000)
+topgene_filter = rowSums(expr[topgenes, ]!=0) > ncol(expr)*.1
+topgenes = topgenes[topgene_filter]
+
+## At last, we subset the preprocessed expression data and run scSorter.
+picked_genes = unique(c(anno$Marker, topgenes))
+expr = expr[rownames(expr) %in% picked_genes, ]
+```
+
+### Fit the scSorter method
+Based on the expression matrix and the marker genes the scSorter method is fit and the cell type assignment results predicted are stored in the Pred_Type vector.
+
+```{r fit_cellannotation, message=FALSE, warning=FALSE, error=FALSE}
+rts <- scSorter(expr, anno)
+panc_new_sct$cell_type <- rts$Pred_Type
+```
+
+### Cell type distribution
+The distribution for all cells across different cells are shown below. From the metrics, We can see that Acinar, Alpha, Beta, and Ductal are some of the major cell types.
+
+```{r}
+table(rts$Pred_Type)
+```
+
+
+```{r, echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+## Run UMAP
+panc_new_sct_umap <- RunUMAP(panc_new_sct, reduction = "pca", dims = 1:20) ## Run umap on 20 pcs
+```
+
+### Add celltype information
+The celltype information is added to the metadata in the original Seurat object
+
+```{r, echo=TRUE, message=FALSE, error=FALSE, warning=FALSE}
+cell_type.info <- data.frame(cell_type = panc_new_sct$cell_type, row.names= colnames(panc_new_sct_umap))
+panc_new_sct_umap <- AddMetaData(object = panc_new_sct_umap, metadata = cell_type.info)
+
+## Convert cell type to factor
+panc_new_sct_umap$cell_type <- as.factor(panc_new_sct_umap$cell_type) 
+
+Idents(panc_new_sct_umap) <- "cell_type"
+panc_new_sct_umap$ident <- NULL
+```
+
+
+### Stacked bar plot 
+
+Analyze the cell type composition across different disease groups and store results in the data frame.
+
+```{r, echo=TRUE, message=FALSE, error=FALSE, warning=FALSE}
+df <- data.frame(panc_new_sct_umap@meta.data$cell_type, panc_new_sct_umap@meta.data$disease_state) 
+colnames(df) <- c("Cell_Type", "Condition")
+df <- df %>% group_by(Condition, Cell_Type) %>% 
+  summarise(Nb = n()) %>%
+  mutate(C = sum(Nb)) %>%
+  mutate(Percent = Nb/C*100) 
+
+df<-df[df$Cell_Type!="Unknown",]
+# df$Condition <- gsub("Control", "CTL", df$Condition)
+df$Cell_Type <- gsub("Stellates_Mesenchymal", "Stellates", df$Cell_Type)
+df$Cell_Type <- gsub("PP_Gamma", "PP", df$Cell_Type)
+```
+
+
+The stacked bar plot showing the cell type composition in each group after pre-processing.
+
+```{r setthemeandplot,message=FALSE, fig.width = 5, fig.height = 5, fig.show="hold" }
+xtheme <- theme_bw()+ theme(plot.title = element_text(face = "bold" ,hjust = 0.5, size= 10)
+                            ,axis.text.y = element_text(face = "bold",angle = 0, size = 10, hjust=1)
+                            ,axis.title.y = element_text(face = "bold", size = rel(0.8))
+                            ,axis.text.x = element_text(face = "bold",angle = 0, size = 10)
+                            ,axis.title.x = element_text(face = "bold", size = rel(0.8))
+                            ,axis.ticks.x=element_blank(), strip.text = element_text(size=10)) 
+ggplot(df, aes(fill=Condition, y=Percent, x=Cell_Type)) + 
+  geom_bar(position="fill", stat="identity") + scale_fill_viridis(discrete = T) + xlab("") + xtheme + 
+  theme(legend.position='top', axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+
+## Check expression of markers
+
+### The expression of markers across all the cell types are shown in different UMAPs
+
+```{r, fig.width = 15, fig.height = 12, fig.show="hold", message=FALSE}
+FeaturePlot(panc_new_sct_umap, features = c("PRSS1", "REG1A", "CPA1", "CPA2", "GCG", 
+                                             "GC", "TTR", "INS", "IAPP", "GHRL",
+                                             "COL1A1", "PDGFRB", "RGS10", "THY1", "VWF",
+                                             "CD93", "PPY", "SST", "NCF2", "PTPRC"), pt.size = 0.2, ncol = 5) + theme(legend.position = 'none', 
+                        axis.title.x = element_blank(), axis.title.y = element_blank())
+
+```
+
+The UMAP showing the cell type annotations from the scSorter method
+
+```{r, fig.width = 7, fig.height = 5, fig.show="hold", message=FALSE}
+DimPlot(panc_new_sct_umap, group.by = "cell_type", reduction = "umap", label = FALSE, cols= c("#e30800", "#f56505", "#dec400", "#006630", "#0223c7","#5b02c7", "#00b0e6", "#c40080", "#02f00a", "#7d3301", "#000000"))
+```
+
+### Below we show the UMAPs for the major cell types
+
+UMAP showing only Acinar cells
+
+```{r, fig.width = 7, fig.height = 5, fig.show="hold", message=FALSE}
+DimPlot(panc_new_sct_umap, group.by = "cell_type", reduction = "umap", label = FALSE, cols= c("#fac720", "#000000", "#000000", "#000000", "#000000","#000000", "#000000", "#000000", "#000000", "#000000", "#000000", "#000000"))
+```
+
+UMAP showing only Alpha cells
+
+```{r, fig.width = 7, fig.height = 5, fig.show="hold", echo=FALSE, message=FALSE}
+DimPlot(panc_new_sct_umap, group.by = "cell_type", reduction = "umap", label = FALSE, cols= c("#000000", "#fac720", "#000000", "#000000", "#000000","#000000", "#000000", "#000000", "#000000", "#000000", "#000000", "#000000"))
+```
+
+UMAP showing only Beta cells
+
+```{r, fig.width = 7, fig.height = 5, fig.show="hold", echo=FALSE, message=FALSE}
+## Beta
+DimPlot(panc_new_sct_umap, group.by = "cell_type", reduction = "umap", label = FALSE, cols= c("#000000", "#000000", "#fac720", "#000000", "#000000","#000000", "#000000", "#000000", "#000000", "#000000", "#000000", "#000000"))
+```
+
+UMAP showing only Ductal cells
+
+```{r, fig.width = 7, fig.height = 5, fig.show="hold", echo=FALSE, message=FALSE}
+## Ductal
+DimPlot(panc_new_sct_umap, group.by = "cell_type", reduction = "umap", label = FALSE, cols= c("#000000", "#000000", "#000000", "#000000", "#fac720","#000000", "#000000", "#000000", "#000000", "#000000", "#000000", "#000000"))
+```
+
+UMAP showing only Immune cells
+
+```{r, fig.width = 7, fig.height = 5, fig.show="hold", echo=FALSE, message=FALSE}
+## Immune
+DimPlot(panc_new_sct_umap, group.by = "cell_type", reduction = "umap", label = FALSE, cols= c("#000000", "#000000", "#000000", "#000000", "#000000","#000000", "#000000", "#fac720", "#000000", "#000000", "#000000", "#000000"))
+```
+
+
