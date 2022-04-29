@@ -1,7 +1,7 @@
 ---
 title: "Analysis of scRNA-seq data from Pancreatic Islets"
-author: "Abhijeet R. Patil"
-date: "4/26/2022"
+author: "https://github.com/faryabiLab/HPAP-scRNA-seq-Workflow-2022"
+date: "4/28/2022"
 output:
   html_document:
     toc: true
@@ -151,7 +151,7 @@ rm(df,CellsMeta,CellsMetaTrim,hpap_id,sample_id,id,disease_state,sample,sample_d
 head(panc@meta.data) %>%
   kable(format = "html", col.names = colnames(head(panc@meta.data))) %>%
   kable_styling() %>%
-  kableExtra::scroll_box(width = "100%", height = "400px")
+  kableExtra::scroll_box(width = "100%", height = "300px")
 ```
 
 
@@ -171,7 +171,7 @@ The below violin plots shows the number of features, counts, and mitochondrial r
 
 Violin plots showing nFeature_RNA, nCount_RNA, and percent.mt with points.
 
-```{r figure-bf_Gene_UMI_MT, message=FALSE, error=FALSE, warning=FALSE, fig.width = 7, fig.height = 5, fig.show="hold"}
+```{r figure-bf_Gene_UMI_MT, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold"}
 VlnPlot(panc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "disease_state",
         pt.size = 0.001, combine = T) & theme(legend.position = 'none',
                                                                axis.title.x = element_blank())
@@ -179,19 +179,25 @@ VlnPlot(panc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3
 
 Violin plots showing nFeature_RNA, nCount_RNA, and percent.mt without points.
 
-```{r  figure-bf_Gene_UMI_MT_v1, message=FALSE, error=FALSE, warning=FALSE, fig.width = 7, fig.height = 5, fig.show="hold"}
+```{r  figure-bf_Gene_UMI_MT_v1, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold"}
 VlnPlot(panc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "disease_state",
         pt.size = 0, combine = T) & theme(legend.position = 'none', 
                                                            axis.title.x = element_blank())
 ```
 
-The FeatureScatter plots used to visualize feature-feature relationships. Correlation between nCount_RNA - nFeature_RNA and nCount_RNA - percent.mt after initial pre-processing are measured.
+The FeatureScatter plots used to visualize feature-feature relationships. Correlation between nCount_RNA - nFeature_RNA after initial pre-processing is measured.
 
-```{r figure-bf_corr, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold"}
+```{r figure-bf_corr, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold"}
 # FeatureScatter used to visualize feature-feature relationships.
-FeatureScatter(panc, feature1 = "nCount_RNA", feature2 = "percent.mt", group.by = "disease_state")  & theme(legend.position = 'none')
+FeatureScatter(panc, feature1 = "nCount_RNA", feature2 = "percent.mt", group.by = "disease_state")
+```
+
+Correlation between nCount_RNA - percent.mt after initial pre-processing is shown below.
+
+```{r figure-bf_corr1, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold"}
 FeatureScatter(panc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "disease_state") 
 ```
+
 
 ## Cell metrics after initial pre-processing
 
@@ -275,10 +281,13 @@ pie(bf_ctl$Freq, labels = pie_labels, col =  hcl.colors(length(bf_ctl$Var1), "Te
 
 Pie chart showing the cell distribution in each T1D and T2D donors
 
-```{r bf_plotT1DT2D, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold", out.width="50%"}
+```{r bf_plotT1D, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold", out.width="50%"}
 ## T1D
 pie_labels <- paste0(bf_t1d$Var1, "  ", round(100 * bf_t1d$Freq/sum(bf_t1d$Freq), 2), "%")
 pie(bf_t1d$Freq, labels = pie_labels, col =  hcl.colors(length(bf_ctl$Var1), "Green-Yellow")) 
+```
+
+```{r bf_plotT2D, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold", out.width="50%"}
 ## T2D
 pie_labels <- paste0(bf_t2d$Var1, "  ", round(100 * bf_t2d$Freq/sum(bf_t2d$Freq), 2), "%")
 pie(bf_t2d$Freq, labels = pie_labels, col =  c("#FFEA00", "#FCF55F", "#FADA5E",
@@ -293,7 +302,7 @@ Median gene number showing the cell distribution across all groups after initial
 df_mgps <- data.frame(panc@meta.data$nFeature_RNA, panc@meta.data$disease_state) 
 colnames(df_mgps) <- c("Median_Gene_Number", "Condition")
 ggplot(df_mgps, aes(Condition, Median_Gene_Number)) + geom_boxplot(aes(fill = Condition), 
-                                                                   width=0.5, outlier.size = 0.8) +
+                                                                   width=0.5, outlier.size = 0.2) +
   scale_fill_viridis(discrete = TRUE) + xlab("") + theme(legend.position = "none")
 ```
 
@@ -323,7 +332,7 @@ The doublet information is stored in the metadata. The updated metadata can be f
 head(panc@meta.data) %>%
   kable(format = "html", col.names = colnames(head(panc@meta.data))) %>%
   kable_styling() %>%
-  kableExtra::scroll_box(width = "100%", height = "400px")
+  kableExtra::scroll_box(width = "100%", height = "300px")
 ```
 
 ## Pre-processing the data based on information from above steps
@@ -384,12 +393,17 @@ VlnPlot(panc_new, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol
 
 
 ### FeatureScatter plots
-Correlation between nCount_RNA - nFeature_RNA and nCount_RNA - percent.mt after filtering.
+Correlation between nCount_RNA - nFeature_RNA after filtering.
 The FeatureScatter is typically used to visualize feature-feature relationships.
 
-```{r figure-af_corr, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold", out.width="50%"}
-plot1 <- FeatureScatter(panc_new, feature1 = "nCount_RNA", feature2 = "percent.mt", group.by = "disease_state")  & theme(legend.position = 'none')
-plot2 <- FeatureScatter(panc_new, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "disease_state") 
+```{r figure-af_corr, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold", out.width="50%"}
+FeatureScatter(panc_new, feature1 = "nCount_RNA", feature2 = "percent.mt", group.by = "disease_state")
+```
+
+Correlation between nCount_RNA - percent.mt after filtering.
+
+```{r figure-af_corr1, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold", out.width="50%"}
+FeatureScatter(panc_new, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "disease_state") 
 ```
 
 ## Cell metrics after final pre-processing
@@ -469,16 +483,21 @@ pie(bf_ctl$Freq, labels = pie_labels, col =  hcl.colors(length(bf_ctl$Var1), "Te
 
 Pie chart showing the cell distribution in each T1D and T2D donors after pre-processing
 
-```{r af_plotT1DT2D, message=FALSE, error=FALSE, warning=FALSE, fig.width = 10, fig.height = 5, fig.show="hold", out.width="50%"}
+```{r af_plotT1D, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold"}
 ## T1D
 pie_labels <- paste0(bf_t1d$Var1, "  ", round(100 * bf_t1d$Freq/sum(bf_t1d$Freq), 2), "%")
 pie(bf_t1d$Freq, labels = pie_labels, col =  hcl.colors(length(bf_ctl$Var1), "Green-Yellow")) 
+```
+
+
+```{r af_plotT2D, message=FALSE, error=FALSE, warning=FALSE, fig.width = 5, fig.height = 5, fig.show="hold"}
 ## T2D
 pie_labels <- paste0(bf_t2d$Var1, "  ", round(100 * bf_t2d$Freq/sum(bf_t2d$Freq), 2), "%")
 pie(bf_t2d$Freq, labels = pie_labels, col =  c("#FFEA00", "#FCF55F", "#FADA5E",
                                                "#FAFA33", "#F4BB44", "#FBEC5D",
                                                "#FFFF00", "#FFFAA0", "#FFE5B4"))
 ```
+
 
 Median gene number showing the cell distribution across all groups after final pre-processing
 
@@ -487,7 +506,7 @@ Median gene number showing the cell distribution across all groups after final p
 df_mgps <- data.frame(panc_new@meta.data$nFeature_RNA, panc_new@meta.data$disease_state) 
 colnames(df_mgps) <- c("Median_Gene_Number", "Condition")
 ggplot(df_mgps, aes(Condition, Median_Gene_Number)) + geom_boxplot(aes(fill = Condition), 
-                                                                   width=0.5, outlier.size = 0.8) +
+                                                                   width=0.5, outlier.size = 0.2) +
   scale_fill_viridis(discrete = TRUE) + xlab("") + theme(legend.position = "none")
 ```
 
@@ -614,7 +633,7 @@ We used marker-based scSorter cell annotation method for assigning cells to know
 anno %>%
   kable(format = "html", col.names = colnames(anno)) %>%
   kable_styling() %>%
-  kableExtra::scroll_box(width = "100%", height = "400px")
+  kableExtra::scroll_box(width = "100%", height = "300px")
 ```
 
 The scSorter method is based on a semi-supervised learning algorithm. It expects the pre-processed data as input. Therefore, we used the previously normalized, scaled and transformed expression matrix generated by SCT method as input. The top 3000 highly variable genes selected by SCT method was also given as input for scSorter method.
